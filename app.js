@@ -146,6 +146,7 @@ function switchTab(tabName) {
 
 // --- Process Logic ---
 async function processEmails(preserveView = false) {
+    const btn = document.getElementById('process-btn');
     const input = document.getElementById('email-input').value;
     const batchSize = parseInt(document.getElementById('batch-size').value) || 25;
     const cooldown = document.getElementById('cooldown-period').value;
@@ -155,81 +156,97 @@ async function processEmails(preserveView = false) {
         return;
     }
 
-    rebuildRegex();
-    const foundEmails = input.match(CONFIG.emailRegex) || [];
-    const rawUniqueEmails = [...new Set(foundEmails.map(e => {
-        let email = e.toLowerCase().trim();
-        // Remove leading/trailing "junk" like hyphens or dots
-        email = email.replace(/^[-.]+/, '').replace(/[-.]+$/, '');
-        return email;
-    }))].filter(e => e.includes('@')); // Ensure it's still a valid structure after cleaning
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+    }
 
-    state.allEmails = [];
-    state.validEmails = [];
-    state.blockedEmails = [];
+    try {
+        rebuildRegex();
+        const foundEmails = input.match(CONFIG.emailRegex) || [];
+        const rawUniqueEmails = [...new Set(foundEmails.map(e => {
+            let email = e.toLowerCase().trim();
+            // Remove leading/trailing "junk" like hyphens or dots
+            email = email.replace(/^[-.]+/, '').replace(/[-.]+$/, '');
+            return email;
+        }))].filter(e => e.includes('@')); // Ensure it's still a valid structure after cleaning
 
-    for (const email of rawUniqueEmails) {
-        const domain = email.split('@')[1];
-        const isEdu = CONFIG.eduTldRegex.test(domain);
-        const hasKeyword = CONFIG.keywordRegex.test(domain);
-        const inBlockList = state.masterBlockList.includes(domain);
-        const isAllowed = state.masterAllowList.includes(domain);
+        state.allEmails = [];
+        state.validEmails = [];
+        state.blockedEmails = [];
 
-        // Cooldown Check
-        const sentRecord = await getSentStatus(email);
-        const onCooldown = sentRecord && Date.now() < sentRecord.expiresAt;
+        // OPTIMIZATION: Fetch all sent records once instead of inside the loop
+        const allSent = await getAllSentEmails();
+        const sentMap = new Map(allSent.map(s => [s.email, s]));
 
-        // Validity logic: Allow List overrides Keyword/TLD. 
-        // Sent status (onCooldown) no longer invalidates an email; it just marks it as sent within the batch.
-        const hasFilterMatch = isEdu || hasKeyword;
-        const isValid = !inBlockList && (isAllowed || !hasFilterMatch);
+        for (const email of rawUniqueEmails) {
+            const domain = email.split('@')[1];
+            const isEdu = CONFIG.eduTldRegex.test(domain);
+            const hasKeyword = CONFIG.keywordRegex.test(domain);
+            const inBlockList = state.masterBlockList.includes(domain);
+            const isAllowed = state.masterAllowList.includes(domain);
 
-        const emailData = {
-            email,
-            domain,
-            isEdu,
-            hasKeyword,
-            inBlockList,
-            isAllowed,
-            onCooldown,
-            isSent: !!sentRecord,
-            isValid: isValid,
-            reason: []
-        };
+            // Cooldown Check using optimized Map lookup
+            const sentRecord = sentMap.get(email);
+            const onCooldown = sentRecord && Date.now() < sentRecord.expiresAt;
 
-        if (inBlockList) emailData.reason.push('Manual Block');
-        if (isEdu && !isAllowed) emailData.reason.push('TLD/EDU');
-        if (hasKeyword && !isAllowed) emailData.reason.push('Keyword');
-        if (onCooldown) emailData.reason.push(`Sent (${new Date(sentRecord.lastSent).toLocaleDateString()})`);
-        if (isAllowed) emailData.reason.push('Allowed Exception');
+            // Validity logic: Allow List overrides Keyword/TLD. 
+            // Sent status (onCooldown) now invalidates an email to move it from active batches to the Blocked section.
+            const hasFilterMatch = isEdu || hasKeyword;
+            const isValid = !inBlockList && (isAllowed || !hasFilterMatch) && !onCooldown;
 
-        if (emailData.isValid) {
-            state.validEmails.push(emailData);
-        } else {
-            state.blockedEmails.push(emailData);
+            const emailData = {
+                email,
+                domain,
+                isEdu,
+                hasKeyword,
+                inBlockList,
+                isAllowed,
+                onCooldown,
+                isSent: !!sentRecord,
+                isValid: isValid,
+                reason: []
+            };
+
+            if (inBlockList) emailData.reason.push('Manual Block');
+            if (isEdu && !isAllowed) emailData.reason.push('TLD/EDU');
+            if (hasKeyword && !isAllowed) emailData.reason.push('Keyword');
+            if (onCooldown) emailData.reason.push(`Sent (${new Date(sentRecord.lastSent).toLocaleDateString()})`);
+            if (isAllowed) emailData.reason.push('Allowed Exception');
+
+            if (emailData.isValid) {
+                state.validEmails.push(emailData);
+            } else {
+                state.blockedEmails.push(emailData);
+            }
+            state.allEmails.push(emailData);
         }
-        state.allEmails.push(emailData);
+
+        // Save as Project if new
+        if (!state.activeProject) {
+            state.activeProject = {
+                id: 'proj_' + Date.now(),
+                name: `Project ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
+                rawInput: input,
+                timestamp: Date.now(),
+                sentCount: 0,
+                totalValid: state.validEmails.length
+            };
+            await saveProject(state.activeProject);
+        }
+
+        createBatches(batchSize);
+        updateStats();
+        if (!preserveView) state.filteredView = null; // Default to batch view only if not preserving state
+        renderResults();
+
+        document.getElementById('post-process-actions').style.display = 'flex';
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-play"></i> Process & Filter';
+        }
     }
-
-    // Save as Project if new
-    if (!state.activeProject) {
-        state.activeProject = {
-            id: 'proj_' + Date.now(),
-            name: `Project ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
-            rawInput: input,
-            timestamp: Date.now(),
-            sentCount: 0,
-            totalValid: state.validEmails.length
-        };
-        await saveProject(state.activeProject);
-    }
-
-    createBatches(batchSize);
-    updateStats();
-    if (!preserveView) state.filteredView = null; // Default to batch view only if not preserving state
-    renderResults();
-
-    document.getElementById('post-process-actions').style.display = 'flex';
 }
 
 function createBatches(size) {
