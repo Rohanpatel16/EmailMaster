@@ -165,6 +165,42 @@ function showToast(message, type = 'success') {
     }, 3000);
 }
 
+function showModal(title, message, isConfirm = false, type = 'info') {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('custom-modal');
+        const titleEl = document.getElementById('modal-title');
+        const messageEl = document.getElementById('modal-message');
+        const iconEl = document.getElementById('modal-icon');
+        const cancelBtn = document.getElementById('modal-cancel-btn');
+        const confirmBtn = document.getElementById('modal-confirm-btn');
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        cancelBtn.style.display = isConfirm ? 'inline-flex' : 'none';
+        confirmBtn.textContent = isConfirm ? 'Confirm' : 'OK';
+
+        // Icon & color by type
+        const icons = { danger: ['fa-exclamation-triangle', '#ef4444'], warning: ['fa-exclamation-circle', '#f59e0b'], success: ['fa-check-circle', '#10b981'] };
+        const [iconClass, color] = icons[type] || ['fa-info-circle', 'var(--accent-color)'];
+        iconEl.className = `fas ${iconClass}`;
+        iconEl.style.color = color;
+
+        modal.classList.add('active');
+
+        const cleanup = (result) => {
+            modal.classList.remove('active');
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            modal.onclick = null;
+            resolve(result);
+        };
+
+        confirmBtn.onclick = () => cleanup(true);
+        cancelBtn.onclick = () => cleanup(false);
+        modal.onclick = (e) => { if (e.target === modal) cleanup(false); };
+    });
+}
+
 function debounce(func, wait) {
     let timeout;
     return function executedFunction(...args) {
@@ -229,7 +265,7 @@ async function processEmails(preserveView = false) {
     const cooldown = state.cooldownPeriod;
 
     if (!input.trim()) {
-        alert('Please paste some text with emails first.');
+        showModal('Attention', 'Please paste some text with emails first.', false, 'warning');
         return;
     }
 
@@ -510,7 +546,8 @@ async function renameProject(id, oldName) {
 }
 
 async function deleteProject(id) {
-    if (!confirm('Are you sure you want to delete this project? Data in history will be lost.')) return;
+    const confirmed = await showModal('Delete Project', 'Are you sure you want to delete this project? Data in history will be lost.', true, 'danger');
+    if (!confirmed) return;
     await deleteProjectFromDB(id);
     if (state.activeProject && state.activeProject.id === id) state.activeProject = null;
     renderProjectHistory();
@@ -562,7 +599,8 @@ async function markBatchAsUnsent() {
     const currentBatch = state.batches[state.currentBatchIndex];
     if (!currentBatch || currentBatch.length === 0) return;
 
-    if (!confirm(`Mark all ${currentBatch.length} emails in this batch as unsent?`)) return;
+    const confirmed = await showModal('Undo Batch', `Mark all ${currentBatch.length} emails in this batch as unsent?`, true, 'warning');
+    if (!confirmed) return;
 
     for (const item of currentBatch) {
         if (item.isSent) {
@@ -581,7 +619,8 @@ async function markBatchAsUnsent() {
 }
 
 async function markAsUnsent(email) {
-    if (!confirm(`Mark ${email} as unsent?`)) return;
+    const confirmed = await showModal('Unmark Email', `Mark ${email} as unsent?`, true, 'info');
+    if (!confirmed) return;
 
     await deleteSentEmail(email);
 
@@ -862,7 +901,7 @@ async function importLists(input) {
             showToast('Filters imported successfully.');
             input.value = ''; // Reset input
         } catch (err) {
-            alert('Invalid filter file.');
+            showModal('Import Error', 'Invalid filter file format. Please use a valid JSON export.', false, 'danger');
             console.error(err);
         }
     };
@@ -933,7 +972,8 @@ async function addTLDFromLibrary(tld) {
 }
 
 async function resetToDefaults() {
-    if (confirm('Reset filters to defaults?')) {
+    const confirmed = await showModal('Reset Defaults', 'Reset all keywords and TLDs to factory defaults?', true, 'warning');
+    if (confirmed) {
         state.keywordsList = [...DEFAULTS.keywords];
         state.tldList = [...DEFAULTS.tlds];
         await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
@@ -943,7 +983,8 @@ async function resetToDefaults() {
 }
 
 async function clearAllData() {
-    if (confirm('CLEAR ALL DATA including history and block lists?')) {
+    const confirmed = await showModal('FACTORY RESET', 'CLEAR ALL DATA including history and block lists? This cannot be undone.', true, 'danger');
+    if (confirmed) {
         indexedDB.deleteDatabase(dbName);
         localStorage.clear();
         location.reload();
