@@ -33,10 +33,9 @@
         <div class="nav-item" onclick="switchTab('settings')">
             <i class="fas fa-cog"></i> Settings
         </div>
-        <div style="margin-top: auto;">
-            <div class="nav-item" onclick="clearAllData()">
-                <i class="fas fa-trash"></i> Reset Tool
-            </div>
+        <div class="sidebar-divider"></div>
+        <div class="nav-item nav-danger" onclick="clearAllData()">
+            <i class="fas fa-trash"></i> Reset Tool
         </div>
     </div>
 
@@ -109,6 +108,9 @@
                     <button class="btn btn-success" id="mark-sent-btn" onclick="markBatchAsSent()">
                         <i class="fas fa-check-double"></i> Mark as Sent
                     </button>
+                    <button class="btn btn-secondary" id="undo-sent-btn" onclick="markBatchAsUnsent()">
+                        <i class="fas fa-undo"></i> Undo Batch
+                    </button>
                 </div>
             </div>
         </div>
@@ -176,7 +178,10 @@
                     <i class="fas fa-search"
                         style="position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: var(--text-secondary);"></i>
                     <input type="text" id="db-search" placeholder="Search emails or domains..."
-                        style="width: 100%; padding-left: 2.8rem;" oninput="filterDatabaseView()">
+                        style="width: 100%; padding-left: 2.8rem; padding-right: 3rem;" oninput="filterDatabaseView()">
+                    <i class="fas fa-times-circle" id="clear-db-search"
+                        style="position: absolute; right: 1rem; top: 50%; transform: translateY(-50%); color: var(--text-secondary); cursor: pointer; display: none;"
+                        onclick="clearDatabaseSearch()"></i>
                 </div>
                 <div id="db-stats"
                     style="font-size: 0.9rem; font-weight: 600; color: var(--accent-color); background: rgba(88, 166, 255, 0.1); padding: 0.6rem 1rem; border-radius: 8px; border: 1px solid rgba(88, 166, 255, 0.2);">
@@ -221,8 +226,20 @@
     <div class="main-content" id="domainfilters-tab" style="display: none;">
         <header style="margin-bottom: 2rem;">
             <h1>Domain Management</h1>
-            <p style="color: var(--text-secondary);">Manage domains that should always be blocked or always allowed
-                (exceptions).</p>
+            <div
+                style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem;">
+                <p style="color: var(--text-secondary);">Manage domains that should always be blocked or always allowed
+                    (exceptions).</p>
+                <div style="display: flex; gap: 0.8rem;">
+                    <button class="btn btn-secondary" onclick="exportLists()">
+                        <i class="fas fa-download"></i> Export Lists
+                    </button>
+                    <label class="btn btn-secondary" style="cursor: pointer; margin: 0;">
+                        <i class="fas fa-upload"></i> Import Lists
+                        <input type="file" id="import-lists-file" style="display: none;" onchange="importLists(this)">
+                    </label>
+                </div>
+            </div>
         </header>
 
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 1.5rem;">
@@ -295,6 +312,7 @@ hr@trusted-company.com" style="min-height: 120px; margin-bottom: 1rem; width: 10
         </div>
     </div>
 
+    <div id="toast-container"></div>
     <script src="app.js"></script>
 </body>
 

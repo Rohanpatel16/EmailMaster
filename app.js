@@ -10,15 +10,18 @@ let state = {
     validEmails: [],
     blockedEmails: [],
     filteredView: null, // 'total', 'valid', 'blocked', 'new'
-    masterBlockList: JSON.parse(localStorage.getItem('masterBlockList')) || [],
-    masterAllowList: JSON.parse(localStorage.getItem('masterAllowList')) || [],
-    keywordsList: JSON.parse(localStorage.getItem('keywordsList')) || [...DEFAULTS.keywords],
-    tldList: JSON.parse(localStorage.getItem('tldList')) || [...DEFAULTS.tlds],
+    masterBlockList: [],
+    masterAllowList: [],
+    keywordsList: [...DEFAULTS.keywords],
+    tldList: [...DEFAULTS.tlds],
     batches: [],
     currentBatchIndex: 0,
     activeProject: null,
     dbCurrentPage: 1,
-    dbFilteredEmails: []
+    dbFilteredEmails: [],
+    // Persisted UI Settings
+    batchSize: 25,
+    cooldownPeriod: 'never'
 };
 
 let CONFIG = {
@@ -29,7 +32,7 @@ let CONFIG = {
 
 // --- Native IndexedDB Manager ---
 const dbName = "EmailMasterDB";
-const dbVersion = 1;
+const dbVersion = 2; // Upgraded for settings and filters
 let db;
 
 function initDB() {
@@ -37,12 +40,20 @@ function initDB() {
         const request = indexedDB.open(dbName, dbVersion);
 
         request.onupgradeneeded = (e) => {
-            const db = e.target.result;
-            if (!db.objectStoreNames.contains('sentEmails')) {
-                db.createObjectStore('sentEmails', { keyPath: 'email' });
+            const upgradedDb = e.target.result;
+            const oldVersion = e.oldVersion;
+
+            if (oldVersion < 1) {
+                upgradedDb.createObjectStore('sentEmails', { keyPath: 'email' });
+                upgradedDb.createObjectStore('projects', { keyPath: 'id' });
             }
-            if (!db.objectStoreNames.contains('projects')) {
-                db.createObjectStore('projects', { keyPath: 'id' });
+            if (oldVersion < 2) {
+                if (!upgradedDb.objectStoreNames.contains('settings')) {
+                    upgradedDb.createObjectStore('settings', { keyPath: 'key' });
+                }
+                if (!upgradedDb.objectStoreNames.contains('filters')) {
+                    upgradedDb.createObjectStore('filters', { keyPath: 'type' });
+                }
             }
         };
 
@@ -56,16 +67,23 @@ function initDB() {
 }
 
 // DB Helpers
+async function ensureDB() {
+    if (!db) await initDB();
+    return db;
+}
+
 async function saveSentEmail(email, cooldown) {
+    const currentDb = await ensureDB();
     const expiresAt = cooldown === 'never' ? Infinity : Date.now() + parseDuration(cooldown);
-    const tx = db.transaction('sentEmails', 'readwrite');
+    const tx = currentDb.transaction('sentEmails', 'readwrite');
     const store = tx.objectStore('sentEmails');
     await store.put({ email, lastSent: Date.now(), expiresAt });
 }
 
 async function getSentStatus(email) {
+    const currentDb = await ensureDB();
     return new Promise((resolve) => {
-        const tx = db.transaction('sentEmails', 'readonly');
+        const tx = currentDb.transaction('sentEmails', 'readonly');
         const store = tx.objectStore('sentEmails');
         const request = store.get(email);
         request.onsuccess = () => resolve(request.result);
@@ -74,8 +92,9 @@ async function getSentStatus(email) {
 }
 
 async function getAllSentEmails() {
+    const currentDb = await ensureDB();
     return new Promise((resolve) => {
-        const tx = db.transaction('sentEmails', 'readonly');
+        const tx = currentDb.transaction('sentEmails', 'readonly');
         const store = tx.objectStore('sentEmails');
         const request = store.getAll();
         request.onsuccess = () => resolve(request.result);
@@ -83,27 +102,81 @@ async function getAllSentEmails() {
 }
 
 async function deleteSentEmail(email) {
-    const tx = db.transaction('sentEmails', 'readwrite');
+    const currentDb = await ensureDB();
+    const tx = currentDb.transaction('sentEmails', 'readwrite');
     const store = tx.objectStore('sentEmails');
     await store.delete(email);
 }
 
 async function saveProject(project) {
-    const tx = db.transaction('projects', 'readwrite');
+    const currentDb = await ensureDB();
+    const tx = currentDb.transaction('projects', 'readwrite');
     const store = tx.objectStore('projects');
     await store.put(project);
 }
 
 async function getAllProjects() {
+    const currentDb = await ensureDB();
     return new Promise((resolve) => {
-        const tx = db.transaction('projects', 'readonly');
+        const tx = currentDb.transaction('projects', 'readonly');
         const store = tx.objectStore('projects');
         const request = store.getAll();
         request.onsuccess = () => resolve(request.result);
     });
 }
 
+async function deleteProjectFromDB(id) {
+    const currentDb = await ensureDB();
+    const tx = currentDb.transaction('projects', 'readwrite');
+    const store = tx.objectStore('projects');
+    await store.delete(id);
+}
+
+// Settings & Filters DB Helpers
+async function saveToDB(storeName, data) {
+    const currentDb = await ensureDB();
+    const tx = currentDb.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    await store.put(data);
+}
+
+async function getFromDB(storeName, key) {
+    const currentDb = await ensureDB();
+    return new Promise((resolve) => {
+        const tx = currentDb.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
+        const request = store.get(key);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => resolve(null);
+    });
+}
+
 // --- Utils ---
+function showToast(message, type = 'success') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    const icon = type === 'success' ? 'fa-check-circle' : 'fa-exclamation-circle';
+    toast.innerHTML = `<i class="fas ${icon}"></i> <span>${message}</span>`;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.classList.add('fade-out');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+function debounce(func, wait) {
+    let timeout;
+    return function executedFunction(...args) {
+        const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+    };
+}
+
 function parseDuration(duration) {
     if (duration === 'never' || duration === 'never') return Infinity;
     const match = duration.match(/^(\d+)([dwmy])$/);
@@ -142,14 +215,18 @@ function switchTab(tabName) {
     if (tabName === 'history') renderProjectHistory();
     if (tabName === 'dbexplorer') renderDatabaseView();
     if (tabName === 'processor') renderResults();
+    if (tabName === 'settings') updateSettingsUI();
+    if (tabName === 'domainfilters') updateDomainFiltersUI();
 }
 
 // --- Process Logic ---
 async function processEmails(preserveView = false) {
     const btn = document.getElementById('process-btn');
     const input = document.getElementById('email-input').value;
-    const batchSize = parseInt(document.getElementById('batch-size').value) || 25;
-    const cooldown = document.getElementById('cooldown-period').value;
+
+    // Use state-based settings
+    const batchSize = state.batchSize;
+    const cooldown = state.cooldownPeriod;
 
     if (!input.trim()) {
         alert('Please paste some text with emails first.');
@@ -399,7 +476,7 @@ async function renderProjectHistory() {
 
         card.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
-                <h3 style="font-size: 1.1rem;">${proj.name}</h3>
+                <h3 style="font-size: 1.1rem; flex: 1; cursor: pointer;" onclick="renameProject('${proj.id}', '${proj.name}')">${proj.name} <i class="fas fa-edit" style="font-size: 0.8rem; opacity: 0.5;"></i></h3>
                 <span class="badge badge-info">${percent}% Sent</span>
             </div>
             <p style="color: var(--text-secondary); font-size: 0.85rem;">Created: ${new Date(proj.timestamp).toLocaleDateString()}</p>
@@ -408,11 +485,36 @@ async function renderProjectHistory() {
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
                 <span style="font-size: 0.8rem; color: var(--text-secondary);">${proj.sentCount} / ${proj.totalValid} Emails</span>
-                <button class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="loadProject('${proj.id}')">Open project</button>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="loadProject('${proj.id}')">Open</button>
+                    <button class="btn btn-danger-outline" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; border-color: rgba(248,81,73,0.3);" onclick="deleteProject('${proj.id}')"><i class="fas fa-trash"></i></button>
+                </div>
             </div>
         `;
         container.appendChild(card);
     });
+}
+
+async function renameProject(id, oldName) {
+    const newName = prompt('Enter new project name:', oldName);
+    if (!newName || newName === oldName) return;
+
+    const projects = await getAllProjects();
+    const proj = projects.find(p => p.id === id);
+    if (proj) {
+        proj.name = newName;
+        await saveProject(proj);
+        renderProjectHistory();
+        showToast('Project renamed.');
+    }
+}
+
+async function deleteProject(id) {
+    if (!confirm('Are you sure you want to delete this project? Data in history will be lost.')) return;
+    await deleteProjectFromDB(id);
+    if (state.activeProject && state.activeProject.id === id) state.activeProject = null;
+    renderProjectHistory();
+    showToast('Project deleted.', 'danger');
 }
 
 async function loadProject(id) {
@@ -441,7 +543,7 @@ async function markBatchAsSent() {
     // Save to Sent History
     for (const item of currentBatch) {
         if (!item.isSent) {
-            await saveSentEmail(item.email, cooldown);
+            await saveSentEmail(item.email, state.cooldownPeriod);
             item.isSent = true;
             if (state.activeProject) state.activeProject.sentCount++;
         }
@@ -452,12 +554,30 @@ async function markBatchAsSent() {
         await saveProject(state.activeProject);
     }
 
-    // Transition UI
-    const btn = document.getElementById('mark-sent-btn');
-    btn.innerHTML = '<i class="fas fa-check"></i> Batch Sent!';
-    setTimeout(() => {
-        btn.innerHTML = '<i class="fas fa-check-double"></i> Mark as Sent';
-    }, 1500);
+    showToast(`Batch ${state.currentBatchIndex + 1} marked as sent!`);
+    renderResults();
+}
+
+async function markBatchAsUnsent() {
+    const currentBatch = state.batches[state.currentBatchIndex];
+    if (!currentBatch || currentBatch.length === 0) return;
+
+    if (!confirm(`Mark all ${currentBatch.length} emails in this batch as unsent?`)) return;
+
+    for (const item of currentBatch) {
+        if (item.isSent) {
+            await deleteSentEmail(item.email);
+            item.isSent = false;
+            if (state.activeProject) state.activeProject.sentCount = Math.max(0, state.activeProject.sentCount - 1);
+        }
+    }
+
+    if (state.activeProject) {
+        await saveProject(state.activeProject);
+    }
+
+    showToast(`Batch ${state.currentBatchIndex + 1} marked as unsent.`);
+    renderResults();
 }
 
 async function markAsUnsent(email) {
@@ -536,8 +656,80 @@ function smartCleanDomain(input) {
     return d || null;
 }
 
+// --- Data Migration & Initialization ---
+async function migrateFromLocalStorage() {
+    const migrationKeys = ['masterBlockList', 'masterAllowList', 'keywordsList', 'tldList'];
+    let migrated = false;
+
+    for (const key of migrationKeys) {
+        const data = localStorage.getItem(key);
+        if (data) {
+            const parsed = JSON.parse(data);
+            if (key === 'masterBlockList' || key === 'masterAllowList') {
+                await saveToDB('filters', { type: key, list: parsed });
+            } else {
+                await saveToDB('filters', { type: key, list: (parsed.length > 0 ? parsed : DEFAULTS[key === 'keywordsList' ? 'keywords' : 'tlds']) });
+            }
+            migrated = true;
+            // localStorage.removeItem(key); // Keeping for safety for now
+        }
+    }
+
+    // Settings migration
+    const oldBatch = localStorage.getItem('batchSize');
+    const oldCooldown = localStorage.getItem('cooldownPeriod');
+    if (oldBatch) await saveToDB('settings', { key: 'batchSize', value: parseInt(oldBatch) });
+    if (oldCooldown) await saveToDB('settings', { key: 'cooldownPeriod', value: oldCooldown });
+
+    return migrated;
+}
+
+async function initApp() {
+    await initDB();
+
+    // Try to migrate if first time
+    const migrationDone = await migrateFromLocalStorage();
+
+    // Load Filters
+    const blockList = await getFromDB('filters', 'masterBlockList');
+    const allowList = await getFromDB('filters', 'masterAllowList');
+    const keywordsList = await getFromDB('filters', 'keywordsList');
+    const tldList = await getFromDB('filters', 'tldList');
+
+    if (blockList) state.masterBlockList = blockList.list;
+    if (allowList) state.masterAllowList = allowList.list;
+    if (keywordsList) state.keywordsList = keywordsList.list;
+    if (tldList) state.tldList = tldList.list;
+
+    // Load Settings
+    const sBatch = await getFromDB('settings', 'batchSize');
+    const sCooldown = await getFromDB('settings', 'cooldownPeriod');
+
+    if (sBatch) state.batchSize = sBatch.value;
+    if (sCooldown) state.cooldownPeriod = sCooldown.value;
+
+    // Sync UI
+    document.getElementById('batch-size').value = state.batchSize;
+    document.getElementById('cooldown-period').value = state.cooldownPeriod;
+
+    // Hooks for UI changes
+    document.getElementById('batch-size').onchange = (e) => {
+        state.batchSize = parseInt(e.target.value) || 25;
+        saveToDB('settings', { key: 'batchSize', value: state.batchSize });
+    };
+    document.getElementById('cooldown-period').onchange = (e) => {
+        state.cooldownPeriod = e.target.value;
+        saveToDB('settings', { key: 'cooldownPeriod', value: state.cooldownPeriod });
+    };
+
+    rebuildRegex();
+    updateDomainFiltersUI();
+    updateSettingsUI();
+    renderProjectHistory();
+}
+
 // Reuse existing keyword/TLD/Blocklist management functions with small adjustments
-function addToBlockList(domain) {
+async function addToBlockList(domain) {
     const input = document.getElementById('blocklist-input');
     const rawValue = domain || (input ? input.value : '');
 
@@ -554,7 +746,7 @@ function addToBlockList(domain) {
     });
 
     if (addedCount > 0) {
-        localStorage.setItem('masterBlockList', JSON.stringify(state.masterBlockList));
+        await saveToDB('filters', { type: 'masterBlockList', list: state.masterBlockList });
         updateDomainFiltersUI();
         if (state.allEmails.length > 0) processEmails(true);
     }
@@ -564,15 +756,15 @@ function addToBlockList(domain) {
 
 
 
-function removeFromBlockList(domain) {
+async function removeFromBlockList(domain) {
     state.masterBlockList = state.masterBlockList.filter(d => d !== domain);
-    localStorage.setItem('masterBlockList', JSON.stringify(state.masterBlockList));
+    await saveToDB('filters', { type: 'masterBlockList', list: state.masterBlockList });
     updateDomainFiltersUI();
     if (state.allEmails.length > 0) processEmails(true);
 }
 
 // Master Allow List Management
-function addToAllowList(domain) {
+async function addToAllowList(domain) {
     const input = document.getElementById('allowlist-input');
     const rawValue = domain || (input ? input.value : '');
 
@@ -588,7 +780,7 @@ function addToAllowList(domain) {
     });
 
     if (addedCount > 0) {
-        localStorage.setItem('masterAllowList', JSON.stringify(state.masterAllowList));
+        await saveToDB('filters', { type: 'masterAllowList', list: state.masterAllowList });
         updateDomainFiltersUI();
         if (state.allEmails.length > 0) processEmails(true);
     }
@@ -596,9 +788,9 @@ function addToAllowList(domain) {
     if (input && !domain) input.value = '';
 }
 
-function removeFromAllowList(domain) {
+async function removeFromAllowList(domain) {
     state.masterAllowList = state.masterAllowList.filter(d => d !== domain);
-    localStorage.setItem('masterAllowList', JSON.stringify(state.masterAllowList));
+    await saveToDB('filters', { type: 'masterAllowList', list: state.masterAllowList });
     updateDomainFiltersUI();
     if (state.allEmails.length > 0) processEmails(true);
 }
@@ -626,6 +818,57 @@ function updateDomainFiltersUI() {
     }
 }
 
+// --- Import/Export Lists ---
+function exportLists() {
+    const data = {
+        block: state.masterBlockList,
+        allow: state.masterAllowList,
+        keywords: state.keywordsList,
+        tlds: state.tldList,
+        version: '1.0',
+        timestamp: Date.now()
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `email_master_filters_${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Filters exported.');
+}
+
+async function importLists(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async function (e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (data.block) state.masterBlockList = data.block;
+            if (data.allow) state.masterAllowList = data.allow;
+            if (data.keywords) state.keywordsList = data.keywords;
+            if (data.tlds) state.tldList = data.tlds;
+
+            await saveToDB('filters', { type: 'masterBlockList', list: state.masterBlockList });
+            await saveToDB('filters', { type: 'masterAllowList', list: state.masterAllowList });
+            await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
+            await saveToDB('filters', { type: 'tldList', list: state.tldList });
+
+            updateDomainFiltersUI();
+            updateSettingsUI();
+            rebuildRegex();
+            showToast('Filters imported successfully.');
+            input.value = ''; // Reset input
+        } catch (err) {
+            alert('Invalid filter file.');
+            console.error(err);
+        }
+    };
+    reader.readAsText(file);
+}
+
 // Settings UI adjustments
 function updateSettingsUI() {
     const kwTags = document.getElementById('keywords-tags');
@@ -650,56 +893,56 @@ function updateSettingsUI() {
         .map(tld => `<div class="badge badge-secondary" style="cursor: pointer; padding: 0.4rem 0.7rem;" onclick="addTLDFromLibrary('${tld}')">+ ${tld}</div>`).join('');
 }
 
-function addKeyword() {
+async function addKeyword() {
     const input = document.getElementById('keyword-input');
     const val = input.value.trim().toLowerCase();
     if (val && !state.keywordsList.includes(val)) {
         state.keywordsList.push(val);
-        localStorage.setItem('keywordsList', JSON.stringify(state.keywordsList));
+        await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
         input.value = ''; updateSettingsUI(); rebuildRegex();
     }
 }
-function removeKeyword(kw) {
+async function removeKeyword(kw) {
     state.keywordsList = state.keywordsList.filter(k => k !== kw);
-    localStorage.setItem('keywordsList', JSON.stringify(state.keywordsList));
+    await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
     updateSettingsUI(); rebuildRegex();
 }
-function addKeywordFromLibrary(kw) {
+async function addKeywordFromLibrary(kw) {
     state.keywordsList.push(kw);
-    localStorage.setItem('keywordsList', JSON.stringify(state.keywordsList));
+    await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
     updateSettingsUI(); rebuildRegex();
 }
-function addTLD() {
+async function addTLD() {
     let val = document.getElementById('tld-input').value.trim().toLowerCase();
     if (val) {
         if (!val.startsWith('.')) val = '.' + val;
         state.tldList.push(val);
-        localStorage.setItem('tldList', JSON.stringify(state.tldList));
+        await saveToDB('filters', { type: 'tldList', list: state.tldList });
         document.getElementById('tld-input').value = ''; updateSettingsUI(); rebuildRegex();
     }
 }
-function removeTLD(tld) {
+async function removeTLD(tld) {
     state.tldList = state.tldList.filter(t => t !== tld);
-    localStorage.setItem('tldList', JSON.stringify(state.tldList));
+    await saveToDB('filters', { type: 'tldList', list: state.tldList });
     updateSettingsUI(); rebuildRegex();
 }
-function addTLDFromLibrary(tld) {
+async function addTLDFromLibrary(tld) {
     state.tldList.push(tld);
-    localStorage.setItem('tldList', JSON.stringify(state.tldList));
+    await saveToDB('filters', { type: 'tldList', list: state.tldList });
     updateSettingsUI(); rebuildRegex();
 }
 
-function resetToDefaults() {
+async function resetToDefaults() {
     if (confirm('Reset filters to defaults?')) {
         state.keywordsList = [...DEFAULTS.keywords];
         state.tldList = [...DEFAULTS.tlds];
-        localStorage.setItem('keywordsList', JSON.stringify(state.keywordsList));
-        localStorage.setItem('tldList', JSON.stringify(state.tldList));
+        await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
+        await saveToDB('filters', { type: 'tldList', list: state.tldList });
         updateSettingsUI(); rebuildRegex();
     }
 }
 
-function clearAllData() {
+async function clearAllData() {
     if (confirm('CLEAR ALL DATA including history and block lists?')) {
         indexedDB.deleteDatabase(dbName);
         localStorage.clear();
@@ -745,9 +988,19 @@ async function renderDatabaseView() {
     });
 
     fullDbCache = Array.from(dbMap.values()).sort((a, b) => a.email.localeCompare(b.email));
-    state.dbFilteredEmails = [...fullDbCache];
-    state.dbCurrentPage = 1;
 
+    // Apply existing search query if any
+    const query = document.getElementById('db-search').value.toLowerCase().trim();
+    if (query) {
+        state.dbFilteredEmails = fullDbCache.filter(e =>
+            e.email.toLowerCase().includes(query) ||
+            (e.email.split('@')[1] && e.email.split('@')[1].toLowerCase().includes(query))
+        );
+    } else {
+        state.dbFilteredEmails = [...fullDbCache];
+    }
+
+    state.dbCurrentPage = 1;
     stats.textContent = `Total: ${fullDbCache.length} Emails`;
     displayDatabaseResults();
 }
@@ -805,15 +1058,27 @@ function changeDatabasePage(dir) {
     if (container) container.scrollTop = 0;
 }
 
-function filterDatabaseView() {
-    const query = document.getElementById('db-search').value.toLowerCase().trim();
+function clearDatabaseSearch() {
+    const input = document.getElementById('db-search');
+    input.value = '';
+    document.getElementById('clear-db-search').style.display = 'none';
+    filterDatabaseView();
+}
+
+const filterDatabaseView = debounce(() => {
+    const input = document.getElementById('db-search');
+    const query = input.value.toLowerCase().trim();
+    const clearBtn = document.getElementById('clear-db-search');
+
+    if (clearBtn) clearBtn.style.display = query ? 'block' : 'none';
+
     state.dbFilteredEmails = fullDbCache.filter(e =>
         e.email.toLowerCase().includes(query) ||
-        e.email.split('@')[1].toLowerCase().includes(query)
+        (e.email.split('@')[1] && e.email.split('@')[1].toLowerCase().includes(query))
     );
     state.dbCurrentPage = 1;
     displayDatabaseResults();
-}
+}, 250);
 
 function exportDatabase(type) {
     if (fullDbCache.length === 0) {
@@ -849,9 +1114,4 @@ function exportDatabase(type) {
 }
 
 // --- Initialization ---
-initDB().then(() => {
-    rebuildRegex();
-    updateDomainFiltersUI();
-    updateSettingsUI();
-    renderProjectHistory();
-});
+initApp();
