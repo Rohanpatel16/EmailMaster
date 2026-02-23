@@ -1,0 +1,5 @@
+# Ignore test data files
+*.txt
+
+# Keep README
+!README.md

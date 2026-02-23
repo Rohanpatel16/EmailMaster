@@ -201,6 +201,48 @@ function showModal(title, message, isConfirm = false, type = 'info') {
     });
 }
 
+function showInputModal(title, message, defaultValue = '') {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('custom-modal');
+        const titleEl = document.getElementById('modal-title');
+        const messageEl = document.getElementById('modal-message');
+        const inputEl = document.getElementById('modal-input');
+        const iconEl = document.getElementById('modal-icon');
+        const cancelBtn = document.getElementById('modal-cancel-btn');
+        const confirmBtn = document.getElementById('modal-confirm-btn');
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        iconEl.className = 'fas fa-edit';
+        iconEl.style.color = 'var(--accent-color)';
+        inputEl.value = defaultValue;
+        inputEl.style.display = 'block';
+        cancelBtn.style.display = 'inline-flex';
+        confirmBtn.textContent = 'Save';
+        modal.classList.add('active');
+        setTimeout(() => inputEl.focus(), 100);
+
+        const cleanup = (result) => {
+            modal.classList.remove('active');
+            inputEl.style.display = 'none';
+            inputEl.onkeydown = null;
+            confirmBtn.onclick = null;
+            cancelBtn.onclick = null;
+            modal.onclick = null;
+            resolve(result);
+        };
+
+        confirmBtn.onclick = () => cleanup(inputEl.value.trim() || null);
+        cancelBtn.onclick = () => cleanup(null);
+        modal.onclick = (e) => { if (e.target === modal) cleanup(null); };
+        inputEl.onkeydown = (e) => { if (e.key === 'Enter') cleanup(inputEl.value.trim() || null); };
+    });
+}
+
+function escapeHtml(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function debounce(func, wait) {
     let timeout;
     return function executedFunction(...args) {
@@ -214,7 +256,8 @@ function debounce(func, wait) {
 }
 
 function parseDuration(duration) {
-    if (duration === 'never' || duration === 'never') return Infinity;
+    if (duration === 'never') return Infinity;
+    if (duration === '0') return 0;
     const match = duration.match(/^(\d+)([dwmy])$/);
     if (!match) return 0;
     const value = parseInt(match[1]);
@@ -229,10 +272,16 @@ function parseDuration(duration) {
 }
 
 function rebuildRegex() {
-    const kwPattern = state.keywordsList.join('|');
-    CONFIG.keywordRegex = new RegExp(`(${kwPattern})`, 'i');
-    const tldPattern = state.tldList.map(t => t.replace('.', '\\.') + '$').join('|');
-    CONFIG.eduTldRegex = new RegExp(`(${tldPattern})`, 'i');
+    if (state.keywordsList.length > 0) {
+        CONFIG.keywordRegex = new RegExp(`(${state.keywordsList.join('|')})`, 'i');
+    } else {
+        CONFIG.keywordRegex = null;
+    }
+    if (state.tldList.length > 0) {
+        CONFIG.eduTldRegex = new RegExp(`(${state.tldList.map(t => t.replace('.', '\\.') + '$').join('|')})`, 'i');
+    } else {
+        CONFIG.eduTldRegex = null;
+    }
 }
 
 // --- Tab & UI Switching ---
@@ -249,8 +298,14 @@ function switchTab(tabName) {
     });
 
     if (tabName === 'history') renderProjectHistory();
-    if (tabName === 'dbexplorer') renderDatabaseView();
-    if (tabName === 'processor') renderResults();
+    if (tabName === 'dbexplorer') {
+        renderDatabaseView();
+        // Sync clear-search button visibility with whatever was left in the input
+        const dbSearch = document.getElementById('db-search');
+        const clearBtn = document.getElementById('clear-db-search');
+        if (clearBtn) clearBtn.style.display = (dbSearch && dbSearch.value) ? 'block' : 'none';
+    }
+    if (tabName === 'processor' && state.allEmails.length > 0) renderResults();
     if (tabName === 'settings') updateSettingsUI();
     if (tabName === 'domainfilters') updateDomainFiltersUI();
 }
@@ -294,8 +349,8 @@ async function processEmails(preserveView = false) {
 
         for (const email of rawUniqueEmails) {
             const domain = email.split('@')[1];
-            const isEdu = CONFIG.eduTldRegex.test(domain);
-            const hasKeyword = CONFIG.keywordRegex.test(domain);
+            const isEdu = CONFIG.eduTldRegex ? CONFIG.eduTldRegex.test(domain) : false;
+            const hasKeyword = CONFIG.keywordRegex ? CONFIG.keywordRegex.test(domain) : false;
             const inBlockList = state.masterBlockList.includes(domain);
             const isAllowed = state.masterAllowList.includes(domain);
 
@@ -341,6 +396,7 @@ async function processEmails(preserveView = false) {
                 id: 'proj_' + Date.now(),
                 name: `Project ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`,
                 rawInput: input,
+                emailList: rawUniqueEmails,
                 timestamp: Date.now(),
                 sentCount: 0,
                 totalValid: state.validEmails.length
@@ -508,11 +564,14 @@ async function renderProjectHistory() {
     projects.sort((a, b) => b.timestamp - a.timestamp).forEach(proj => {
         const card = document.createElement('div');
         card.className = 'project-card';
-        const percent = Math.round((proj.sentCount / proj.totalValid) * 100) || 0;
+        const sentCount = proj.sentCount || 0;
+        const totalValid = proj.totalValid || 1;
+        const percent = Math.min(100, Math.round((sentCount / totalValid) * 100));
 
+        const safeName = escapeHtml(proj.name);
         card.innerHTML = `
             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
-                <h3 style="font-size: 1.1rem; flex: 1; cursor: pointer;" onclick="renameProject('${proj.id}', '${proj.name}')">${proj.name} <i class="fas fa-edit" style="font-size: 0.8rem; opacity: 0.5;"></i></h3>
+                <h3 style="font-size: 1.1rem; flex: 1; cursor: pointer;" onclick="renameProject('${proj.id}', '${escapeHtml(proj.name)}')">${safeName} <i class="fas fa-edit" style="font-size: 0.8rem; opacity: 0.5;"></i></h3>
                 <span class="badge badge-info">${percent}% Sent</span>
             </div>
             <p style="color: var(--text-secondary); font-size: 0.85rem;">Created: ${new Date(proj.timestamp).toLocaleDateString()}</p>
@@ -520,7 +579,7 @@ async function renderProjectHistory() {
                 <div class="progress-bar" style="width: ${percent}%"></div>
             </div>
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem;">
-                <span style="font-size: 0.8rem; color: var(--text-secondary);">${proj.sentCount} / ${proj.totalValid} Emails</span>
+                <span style="font-size: 0.8rem; color: var(--text-secondary);">${sentCount} / ${totalValid} Emails</span>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.8rem;" onclick="loadProject('${proj.id}')">Open</button>
                     <button class="btn btn-danger-outline" style="padding: 0.4rem 0.8rem; font-size: 0.8rem; border-color: rgba(248,81,73,0.3);" onclick="deleteProject('${proj.id}')"><i class="fas fa-trash"></i></button>
@@ -532,7 +591,7 @@ async function renderProjectHistory() {
 }
 
 async function renameProject(id, oldName) {
-    const newName = prompt('Enter new project name:', oldName);
+    const newName = await showInputModal('Rename Project', 'Enter a new name for this project:', oldName);
     if (!newName || newName === oldName) return;
 
     const projects = await getAllProjects();
@@ -559,6 +618,12 @@ async function loadProject(id) {
     const proj = projects.find(p => p.id === id);
     if (!proj) return;
 
+    // Reset state to avoid stale data when loading a new project
+    state.batches = [];
+    state.currentBatchIndex = 0;
+    state.allEmails = [];
+    state.validEmails = [];
+    state.blockedEmails = [];
     state.activeProject = proj;
     document.getElementById('email-input').value = proj.rawInput;
 
@@ -574,8 +639,6 @@ async function loadProject(id) {
 async function markBatchAsSent() {
     const currentBatch = state.batches[state.currentBatchIndex];
     if (!currentBatch || currentBatch.length === 0) return;
-
-    const cooldown = document.getElementById('cooldown-period').value;
 
     // Save to Sent History
     for (const item of currentBatch) {
@@ -606,11 +669,11 @@ async function markBatchAsUnsent() {
         if (item.isSent) {
             await deleteSentEmail(item.email);
             item.isSent = false;
-            if (state.activeProject) state.activeProject.sentCount = Math.max(0, state.activeProject.sentCount - 1);
         }
     }
 
     if (state.activeProject) {
+        state.activeProject.sentCount = state.allEmails.filter(e => e.isSent).length;
         await saveProject(state.activeProject);
     }
 
@@ -626,21 +689,12 @@ async function markAsUnsent(email) {
 
     // Update local state
     state.batches.forEach(batch => {
-        batch.forEach(item => {
-            if (item.email === email) {
-                item.isSent = false;
-                if (state.activeProject) state.activeProject.sentCount = Math.max(0, state.activeProject.sentCount - 1);
-            }
-        });
+        batch.forEach(item => { if (item.email === email) item.isSent = false; });
     });
-
-    state.allEmails.forEach(item => {
-        if (item.email === email) {
-            item.isSent = false;
-        }
-    });
+    state.allEmails.forEach(item => { if (item.email === email) item.isSent = false; });
 
     if (state.activeProject) {
+        state.activeProject.sentCount = state.allEmails.filter(e => e.isSent).length;
         await saveProject(state.activeProject);
     }
 
@@ -664,7 +718,7 @@ function copyCurrentBatch() {
         const originalHtml = btn.innerHTML;
         btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
         setTimeout(() => btn.innerHTML = originalHtml, 2000);
-    });
+    }).catch(() => showToast('Copy failed. Please copy manually.', 'danger'));
 }
 
 // --- Smart Extraction Helper ---
@@ -697,6 +751,10 @@ function smartCleanDomain(input) {
 
 // --- Data Migration & Initialization ---
 async function migrateFromLocalStorage() {
+    // Run migration only once to avoid overwriting good IndexedDB data with stale localStorage
+    const alreadyMigrated = await getFromDB('settings', 'migrationDone');
+    if (alreadyMigrated) return false;
+
     const migrationKeys = ['masterBlockList', 'masterAllowList', 'keywordsList', 'tldList'];
     let migrated = false;
 
@@ -710,16 +768,18 @@ async function migrateFromLocalStorage() {
                 await saveToDB('filters', { type: key, list: (parsed.length > 0 ? parsed : DEFAULTS[key === 'keywordsList' ? 'keywords' : 'tlds']) });
             }
             migrated = true;
-            // localStorage.removeItem(key); // Keeping for safety for now
+            localStorage.removeItem(key);
         }
     }
 
     // Settings migration
     const oldBatch = localStorage.getItem('batchSize');
     const oldCooldown = localStorage.getItem('cooldownPeriod');
-    if (oldBatch) await saveToDB('settings', { key: 'batchSize', value: parseInt(oldBatch) });
-    if (oldCooldown) await saveToDB('settings', { key: 'cooldownPeriod', value: oldCooldown });
+    if (oldBatch) { await saveToDB('settings', { key: 'batchSize', value: parseInt(oldBatch) }); localStorage.removeItem('batchSize'); }
+    if (oldCooldown) { await saveToDB('settings', { key: 'cooldownPeriod', value: oldCooldown }); localStorage.removeItem('cooldownPeriod'); }
 
+    // Mark migration as done so it never runs again
+    await saveToDB('settings', { key: 'migrationDone', value: true });
     return migrated;
 }
 
@@ -841,8 +901,8 @@ function updateDomainFiltersUI() {
     if (blockContainer) {
         blockContainer.innerHTML = state.masterBlockList.map(domain => `
             <div class="badge badge-danger" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.8rem;">
-                ${domain}
-                <i class="fas fa-times" style="cursor: pointer;" onclick="removeFromBlockList('${domain}')"></i>
+                ${escapeHtml(domain)}
+                <i class="fas fa-times" style="cursor: pointer;" onclick="removeFromBlockList('${escapeHtml(domain)}')"></i>
             </div>
         `).join('');
     }
@@ -850,8 +910,8 @@ function updateDomainFiltersUI() {
     if (allowContainer) {
         allowContainer.innerHTML = state.masterAllowList.map(domain => `
             <div class="badge badge-success" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.8rem;">
-                ${domain}
-                <i class="fas fa-times" style="cursor: pointer;" onclick="removeFromAllowList('${domain}')"></i>
+                ${escapeHtml(domain)}
+                <i class="fas fa-times" style="cursor: pointer;" onclick="removeFromAllowList('${escapeHtml(domain)}')"></i>
             </div>
         `).join('');
     }
@@ -871,10 +931,11 @@ function exportLists() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `email_master_filters_${new Date().toISOString().split('T')[0]}.json`;
+    const filename = `email_master_filters_${new Date().toISOString().split('T')[0]}.json`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
-    showToast('Filters exported.');
+    showToast(`Exported as ${filename}`);
 }
 
 async function importLists(input) {
@@ -939,17 +1000,20 @@ async function addKeyword() {
         state.keywordsList.push(val);
         await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
         input.value = ''; updateSettingsUI(); rebuildRegex();
+        showToast('Filter saved.');
     }
 }
 async function removeKeyword(kw) {
     state.keywordsList = state.keywordsList.filter(k => k !== kw);
     await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
     updateSettingsUI(); rebuildRegex();
+    showToast('Filter saved.');
 }
 async function addKeywordFromLibrary(kw) {
     state.keywordsList.push(kw);
     await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
     updateSettingsUI(); rebuildRegex();
+    showToast('Filter saved.');
 }
 async function addTLD() {
     let val = document.getElementById('tld-input').value.trim().toLowerCase();
@@ -958,17 +1022,20 @@ async function addTLD() {
         state.tldList.push(val);
         await saveToDB('filters', { type: 'tldList', list: state.tldList });
         document.getElementById('tld-input').value = ''; updateSettingsUI(); rebuildRegex();
+        showToast('Filter saved.');
     }
 }
 async function removeTLD(tld) {
     state.tldList = state.tldList.filter(t => t !== tld);
     await saveToDB('filters', { type: 'tldList', list: state.tldList });
     updateSettingsUI(); rebuildRegex();
+    showToast('Filter saved.');
 }
 async function addTLDFromLibrary(tld) {
     state.tldList.push(tld);
     await saveToDB('filters', { type: 'tldList', list: state.tldList });
     updateSettingsUI(); rebuildRegex();
+    showToast('Filter saved.');
 }
 
 async function resetToDefaults() {
@@ -1015,7 +1082,8 @@ async function renderDatabaseView() {
 
     // 2. Add all unique emails from projects
     projects.forEach(proj => {
-        const found = proj.rawInput.match(CONFIG.emailRegex) || [];
+        // Use cached emailList if available; only fall back to regex for old projects
+        const found = proj.emailList || proj.rawInput.match(CONFIG.emailRegex) || [];
         found.forEach(email => {
             const e = email.toLowerCase().trim();
             if (!dbMap.has(e)) {
@@ -1123,7 +1191,7 @@ const filterDatabaseView = debounce(() => {
 
 function exportDatabase(type) {
     if (fullDbCache.length === 0) {
-        alert('Database is empty.');
+        showModal('Nothing to Export', 'The database is empty. Process some emails first.', false, 'warning');
         return;
     }
 

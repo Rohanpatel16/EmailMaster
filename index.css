@@ -477,6 +477,30 @@ tr:hover td {
     }
 }
 
+/* Modal text input for rename flows */
+.modal-text-input {
+    width: 100%;
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(255, 255, 255, 0.05);
+    color: #fff;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.modal-text-input:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
+/* Push "Reset Tool" to the very bottom of the sidebar */
+.nav-danger {
+    margin-top: auto;
+}
+
 /* Premium Modal System */
 .modal-overlay {
     position: fixed;
