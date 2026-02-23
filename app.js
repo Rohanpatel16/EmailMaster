@@ -191,9 +191,9 @@ async function processEmails(preserveView = false) {
             const onCooldown = sentRecord && Date.now() < sentRecord.expiresAt;
 
             // Validity logic: Allow List overrides Keyword/TLD. 
-            // Sent status (onCooldown) now invalidates an email to move it from active batches to the Blocked section.
+            // Sent status (onCooldown) identifies an email as sent within its current batch.
             const hasFilterMatch = isEdu || hasKeyword;
-            const isValid = !inBlockList && (isAllowed || !hasFilterMatch) && !onCooldown;
+            const isValid = !inBlockList && (isAllowed || !hasFilterMatch);
 
             const emailData = {
                 email,
