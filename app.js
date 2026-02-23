@@ -97,7 +97,7 @@ async function ensureDB() {
 
 async function saveSentEmail(email, cooldown) {
     const currentDb = await ensureDB();
-    const expiresAt = cooldown === 'never' ? Infinity : Date.now() + parseDuration(cooldown);
+    const expiresAt = cooldown === 'never' ? Number.MAX_SAFE_INTEGER : Date.now() + parseDuration(cooldown);
     const tx = currentDb.transaction('sentEmails', 'readwrite');
     const store = tx.objectStore('sentEmails');
     await store.put({ email, lastSent: Date.now(), expiresAt });
@@ -381,10 +381,10 @@ async function processEmails(preserveView = false) {
             const sentRecord = sentMap.get(email);
             const onCooldown = sentRecord && Date.now() < sentRecord.expiresAt;
 
-            // Validity logic: Allow List overrides Keyword/TLD. 
-            // Sent status (onCooldown) identifies an email as sent within its current batch.
+            // Validity logic: Allow List overrides Keyword/TLD.
+            // Emails on cooldown are excluded from valid batches — they've already been sent.
             const hasFilterMatch = isEdu || hasKeyword;
-            const isValid = !inBlockList && (isAllowed || !hasFilterMatch);
+            const isValid = !inBlockList && (isAllowed || !hasFilterMatch) && !onCooldown;
 
             const emailData = {
                 email,
@@ -394,7 +394,7 @@ async function processEmails(preserveView = false) {
                 inBlockList,
                 isAllowed,
                 onCooldown,
-                isSent: !!sentRecord,
+                isSent: !!onCooldown,
                 isValid: isValid,
                 reason: []
             };
@@ -413,7 +413,7 @@ async function processEmails(preserveView = false) {
             state.allEmails.push(emailData);
         }
 
-        // Save as Project if new
+        // Save as Project if new; update totalValid if reloading an existing one
         if (!state.activeProject) {
             state.activeProject = {
                 id: 'proj_' + Date.now(),
@@ -424,6 +424,10 @@ async function processEmails(preserveView = false) {
                 sentCount: 0,
                 totalValid: state.validEmails.length
             };
+            await saveProject(state.activeProject);
+        } else {
+            // Filters may have changed since last open — keep totalValid accurate
+            state.activeProject.totalValid = state.validEmails.length;
             await saveProject(state.activeProject);
         }
 
@@ -735,8 +739,9 @@ async function markAsUnsent(email) {
     updateStats();
     renderResults();
 
-    // If database view is active, refresh it
+    // If database view is active, refresh it with a clean cache
     if (document.getElementById('dbexplorer-tab').style.display !== 'none') {
+        fullDbCache = [];
         renderDatabaseView();
     }
 }
@@ -880,7 +885,7 @@ async function addToBlockList(domain) {
     if (addedCount > 0) {
         await saveToDB('filters', { type: 'masterBlockList', list: state.masterBlockList });
         updateDomainFiltersUI();
-        if (state.allEmails.length > 0) processEmails(true);
+        if (state.allEmails.length > 0) await processEmails(true);
     }
 
     if (input && !domain) input.value = '';
@@ -892,7 +897,7 @@ async function removeFromBlockList(domain) {
     state.masterBlockList = state.masterBlockList.filter(d => d !== domain);
     await saveToDB('filters', { type: 'masterBlockList', list: state.masterBlockList });
     updateDomainFiltersUI();
-    if (state.allEmails.length > 0) processEmails(true);
+    if (state.allEmails.length > 0) await processEmails(true);
 }
 
 // Master Allow List Management
@@ -914,7 +919,7 @@ async function addToAllowList(domain) {
     if (addedCount > 0) {
         await saveToDB('filters', { type: 'masterAllowList', list: state.masterAllowList });
         updateDomainFiltersUI();
-        if (state.allEmails.length > 0) processEmails(true);
+        if (state.allEmails.length > 0) await processEmails(true);
     }
 
     if (input && !domain) input.value = '';
@@ -924,7 +929,7 @@ async function removeFromAllowList(domain) {
     state.masterAllowList = state.masterAllowList.filter(d => d !== domain);
     await saveToDB('filters', { type: 'masterAllowList', list: state.masterAllowList });
     updateDomainFiltersUI();
-    if (state.allEmails.length > 0) processEmails(true);
+    if (state.allEmails.length > 0) await processEmails(true);
 }
 
 function updateDomainFiltersUI() {
@@ -1011,19 +1016,19 @@ function updateSettingsUI() {
 
     if (kwTags) kwTags.innerHTML = state.keywordsList.map(kw => `
         <div class="badge badge-info" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.7rem;">
-            ${kw} <i class="fas fa-times" style="cursor: pointer;" onclick="removeKeyword('${kw}')"></i>
+            ${escapeHtml(kw)} <i class="fas fa-times" style="cursor: pointer;" onclick="removeKeyword('${escapeHtml(kw)}')"></i>
         </div>`).join('');
 
     if (kwLibrary) kwLibrary.innerHTML = DEFAULTS.keywords.filter(kw => !state.keywordsList.includes(kw))
-        .map(kw => `<div class="badge badge-secondary" style="cursor: pointer; padding: 0.4rem 0.7rem;" onclick="addKeywordFromLibrary('${kw}')">+ ${kw}</div>`).join('');
+        .map(kw => `<div class="badge badge-secondary" style="cursor: pointer; padding: 0.4rem 0.7rem;" onclick="addKeywordFromLibrary('${escapeHtml(kw)}')">+ ${escapeHtml(kw)}</div>`).join('');
 
     if (tldTags) tldTags.innerHTML = state.tldList.map(tld => `
         <div class="badge badge-info" style="display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.7rem;">
-            ${tld} <i class="fas fa-times" style="cursor: pointer;" onclick="removeTLD('${tld}')"></i>
+            ${escapeHtml(tld)} <i class="fas fa-times" style="cursor: pointer;" onclick="removeTLD('${escapeHtml(tld)}')"></i>
         </div>`).join('');
 
     if (tldLibrary) tldLibrary.innerHTML = DEFAULTS.tlds.filter(tld => !state.tldList.includes(tld))
-        .map(tld => `<div class="badge badge-secondary" style="cursor: pointer; padding: 0.4rem 0.7rem;" onclick="addTLDFromLibrary('${tld}')">+ ${tld}</div>`).join('');
+        .map(tld => `<div class="badge badge-secondary" style="cursor: pointer; padding: 0.4rem 0.7rem;" onclick="addTLDFromLibrary('${escapeHtml(tld)}')">+ ${escapeHtml(tld)}</div>`).join('');
 }
 
 async function addKeyword() {
@@ -1043,6 +1048,7 @@ async function removeKeyword(kw) {
     showToast('Filter saved.');
 }
 async function addKeywordFromLibrary(kw) {
+    if (state.keywordsList.includes(kw)) return;
     state.keywordsList.push(kw);
     await saveToDB('filters', { type: 'keywordsList', list: state.keywordsList });
     updateSettingsUI(); rebuildRegex();
@@ -1169,7 +1175,7 @@ function displayDatabaseResults() {
         pageData.forEach(item => {
             const row = document.createElement('tr');
             const lastSentDate = item.lastSent ? new Date(item.lastSent).toLocaleDateString() : 'Never';
-            const isExpired = item.lastSent && item.expiresAt !== Infinity && Date.now() > item.expiresAt;
+            const isExpired = item.lastSent && item.expiresAt < Number.MAX_SAFE_INTEGER && Date.now() > item.expiresAt;
             const statusLabel = !item.lastSent ? 'New' : (isExpired ? 'Cooldown Over' : 'On Cooldown');
             const badgeClass = !item.lastSent ? 'badge-info' : (isExpired ? 'badge-secondary' : 'badge-success');
 
@@ -1235,7 +1241,7 @@ function exportDatabase(type) {
         content = 'Email,Last Sent,Status\n';
         fullDbCache.forEach(e => {
             const lastSent = e.lastSent ? new Date(e.lastSent).toLocaleDateString() : 'Never';
-            const status = !e.lastSent ? 'New' : ((e.expiresAt !== Infinity && Date.now() > e.expiresAt) ? 'Cooldown Over' : 'On Cooldown');
+            const status = !e.lastSent ? 'New' : ((e.expiresAt < Number.MAX_SAFE_INTEGER && Date.now() > e.expiresAt) ? 'Cooldown Over' : 'On Cooldown');
             content += `${e.email},${lastSent},${status}\n`;
         });
         filename += '.csv';

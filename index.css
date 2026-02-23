@@ -398,63 +398,6 @@ tr:hover td {
     font-size: 0.7rem;
 }
 
-/* Toast Notifications */
-#toast-container {
-    position: fixed;
-    bottom: 2rem;
-    right: 2rem;
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-    gap: 0.8rem;
-}
-
-.toast {
-    background: var(--card-bg);
-    border: 1px solid var(--border-color);
-    border-left: 4px solid var(--accent-color);
-    color: var(--text-primary);
-    padding: 1rem 1.5rem;
-    border-radius: 8px;
-    backdrop-filter: blur(var(--glass-blur));
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    display: flex;
-    align-items: center;
-    gap: 0.8rem;
-    min-width: 250px;
-    animation: slideIn 0.3s ease-out;
-}
-
-.toast.success {
-    border-left-color: var(--success-color);
-}
-
-.toast.danger {
-    border-left-color: var(--danger-color);
-}
-
-@keyframes slideIn {
-    from {
-        transform: translateX(100%);
-        opacity: 0;
-    }
-
-    to {
-        transform: translateX(0);
-        opacity: 1;
-    }
-}
-
-.toast.fade-out {
-    animation: slideOut 0.3s forwards;
-}
-
-@keyframes slideOut {
-    to {
-        transform: translateX(100%);
-        opacity: 0;
-    }
-}
 
 /* Table tweaks */
 .table-container {
@@ -510,17 +453,18 @@ tr:hover td {
     height: 100%;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(8px);
-    display: none;
+    display: flex;
     justify-content: center;
     align-items: center;
     z-index: 9999;
     opacity: 0;
+    pointer-events: none;
     transition: opacity 0.3s ease;
 }
 
 .modal-overlay.active {
-    display: flex;
     opacity: 1;
+    pointer-events: all;
 }
 
 .modal-card {
